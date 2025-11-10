@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 import time
-import hashlib
 import hmac
+import hashlib
 import urllib.parse
 from datetime import datetime, timedelta
 import json
@@ -28,50 +28,82 @@ SECRET_KEY = "94WfpKd5PHng5u2ySWvZW0URKxZofI5rON3MJ0CURKgz4gKj1vxI8HZmvugrOt4U"
 BASE_URL = "https://mock-api.roostoo.com"
 
 # ========== 交易对配置 ==========
-# 修正交易对格式 - 根据Roostoo文档使用正确格式
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'BNBUSDT']
+# 根据文档使用正确的交易对格式
+SYMBOLS = ['BTC/USD', 'ETH/USD', 'ADA/USD', 'DOT/USD', 'BNB/USD']
 
 # ========== API工具函数 ==========
-def generate_signature(params, secret_key):
-    """根据Roostoo API要求生成HMAC SHA256签名"""
+def get_timestamp():
+    """获取13位毫秒时间戳"""
+    return str(int(time.time() * 1000))
+
+def generate_signature(params):
+    """
+    根据Roostoo API文档生成HMAC SHA256签名
+    严格按照文档要求：参数排序后连接，使用secret_key作为HMAC密钥
+    """
     try:
         # 参数按key排序后连接成字符串
         sorted_params = sorted(params.items())
         query_string = '&'.join([f"{key}={urllib.parse.quote(str(value))}" for key, value in sorted_params])
         
+        logger.debug(f"签名原始字符串: {query_string}")
+        
         # 使用HMAC SHA256生成签名
         signature = hmac.new(
-            secret_key.encode('utf-8'),
+            SECRET_KEY.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
         
+        logger.debug(f"生成签名: {signature}")
         return signature
+        
     except Exception as e:
         logger.error(f"生成签名失败: {e}")
         return None
 
-def get_timestamp():
-    """获取13位毫秒时间戳"""
-    return str(int(time.time() * 1000))
+def get_signed_headers(params):
+    """生成签名请求头"""
+    timestamp = get_timestamp()
+    params['timestamp'] = timestamp
+    
+    signature = generate_signature(params)
+    if not signature:
+        return None, None
+    
+    headers = {
+        'RST-API-KEY': API_KEY,
+        'MSG-SIGNATURE': signature,
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    
+    return headers, params
+
+def get_exchange_info():
+    """获取交易所信息 - 用于获取交易对精度"""
+    try:
+        url = f"{BASE_URL}/v3/exchangeInfo"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if data.get('IsRunning', False):
+            logger.info("✅ 成功获取交易所信息")
+            return data.get('TradePairs', {})
+        else:
+            logger.error("❌ 获取交易所信息失败")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ 获取交易所信息时发生异常: {e}")
+        return None
 
 def get_account_balance():
     """获取账户余额信息"""
     try:
-        timestamp = get_timestamp()
-        
-        params = {'timestamp': timestamp}
-        signature = generate_signature(params, SECRET_KEY)
-        
-        if not signature:
+        headers, params = get_signed_headers({})
+        if not headers:
             return None
             
-        headers = {
-            'RST-API-KEY': API_KEY,
-            'MSG-SIGNATURE': signature,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
         response = requests.get(f"{BASE_URL}/v3/balance", headers=headers, params=params, timeout=10)
         data = response.json()
         
@@ -86,82 +118,73 @@ def get_account_balance():
         logger.error(f"❌ 获取余额时发生异常: {e}")
         return None
 
-def get_realtime_ticker(symbol):
+def get_realtime_ticker(pair):
     """获取单个交易对的实时行情"""
     try:
-        timestamp = get_timestamp()
-        
-        params = {
-            'symbol': symbol,  # 修正参数名
-            'timestamp': timestamp
-        }
-        
-        response = requests.get(f"{BASE_URL}/v3/ticker", params=params, timeout=10)
-        
-        # 调试信息：打印原始响应
-        logger.debug(f"Ticker响应状态: {response.status_code}")
-        logger.debug(f"Ticker响应内容: {response.text[:200]}...")
-        
+        params = {'pair': pair}
+        headers, params = get_signed_headers(params)
+        if not headers:
+            return None
+            
+        response = requests.get(f"{BASE_URL}/v3/ticker", headers=headers, params=params, timeout=10)
         data = response.json()
         
         if data.get('Success'):
-            ticker_data = data.get('Data', {}).get(symbol, {})
+            ticker_data = data.get('Data', {}).get(pair, {})
             return {
-                'symbol': symbol,
+                'pair': pair,
                 'last_price': float(ticker_data.get('LastPrice', 0)),
-                'volume': float(ticker_data.get('Volume', 0)),
+                'change': float(ticker_data.get('Change', 0)),
+                'volume': float(ticker_data.get('UnitTradeValue', 0)),
                 'timestamp': datetime.now()
             }
         else:
-            logger.warning(f"⚠️ 获取{symbol}行情失败: {data.get('ErrMsg', '未知错误')}")
+            logger.warning(f"⚠️ 获取{pair}行情失败: {data.get('ErrMsg', '未知错误')}")
             return None
             
     except Exception as e:
-        logger.error(f"❌ 获取{symbol}行情时发生异常: {e}")
+        logger.error(f"❌ 获取{pair}行情时发生异常: {e}")
         return None
 
 def get_all_tickers():
     """获取所有交易对的实时行情"""
     tickers = {}
-    for symbol in SYMBOLS:
-        ticker_data = get_realtime_ticker(symbol)
+    for pair in SYMBOLS:
+        ticker_data = get_realtime_ticker(pair)
         if ticker_data:
-            tickers[symbol] = ticker_data
+            tickers[pair] = ticker_data
         time.sleep(0.1)  # 避免请求过于频繁
     return tickers
 
-def place_order(symbol, side, quantity, order_type="MARKET"):
-    """下订单 - 修正数量精度问题"""
+def place_order(pair, side, quantity, order_type="MARKET", price=None):
+    """下订单 - 严格按照文档格式"""
     try:
-        timestamp = get_timestamp()
-        
-        # 修正数量精度 - 根据交易对调整精度
-        quantity = self.adjust_quantity_precision(symbol, float(quantity))
-        
+        # 构建参数
         params = {
-            'symbol': symbol,  # 修正参数名
+            'pair': pair,
             'side': side.upper(),
-            'quantity': quantity,
             'type': order_type.upper(),
-            'timestamp': timestamp
+            'quantity': str(quantity)
         }
         
-        signature = generate_signature(params, SECRET_KEY)
+        # LIMIT订单需要价格参数
+        if order_type.upper() == "LIMIT" and price is not None:
+            params['price'] = str(price)
         
-        if not signature:
+        headers, params = get_signed_headers(params)
+        if not headers:
             return False
             
-        headers = {
-            'RST-API-KEY': API_KEY,
-            'MSG-SIGNATURE': signature,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
+        # 使用data参数发送POST请求，按照文档要求
+        sorted_params = sorted(params.items())
+        query_string = '&'.join([f"{key}={urllib.parse.quote(str(value))}" for key, value in sorted_params])
         
-        response = requests.post(f"{BASE_URL}/v3/order", headers=headers, data=params, timeout=10)
+        response = requests.post(f"{BASE_URL}/v3/place_order", headers=headers, data=query_string, timeout=10)
         data = response.json()
         
         if data.get('Success'):
-            logger.info(f"✅ 订单提交成功: {side} {quantity} {symbol}")
+            order_detail = data.get('OrderDetail', {})
+            logger.info(f"✅ 订单提交成功: {side} {quantity} {pair} - 状态: {order_detail.get('Status', 'UNKNOWN')}")
             return True
         else:
             logger.error(f"❌ 订单提交失败: {data.get('ErrMsg', '未知错误')}")
@@ -171,96 +194,45 @@ def place_order(symbol, side, quantity, order_type="MARKET"):
         logger.error(f"❌ 下单时发生异常: {e}")
         return False
 
-def get_kline_data(symbol, interval='5m', limit=100):
-    """修复K线数据获取 - 修正API端点"""
+def get_market_data(pair, days=30):
+    """
+    获取市场数据用于动量计算
+    由于文档中没有K线接口，我们使用ticker数据模拟历史数据
+    """
     try:
-        timestamp = get_timestamp()
-        
-        params = {
-            'symbol': symbol,  # 修正参数名
-            'interval': interval,
-            'limit': limit,
-            'timestamp': timestamp
-        }
-        
-        # 尝试不同的API端点
-        endpoints = [
-            f"{BASE_URL}/v3/klines",
-            f"{BASE_URL}/api/v3/klines",  # 常见格式
-            f"{BASE_URL}/v3/market/kline"  # 备选端点
-        ]
-        
-        signature = generate_signature(params, SECRET_KEY)
-        
-        if not signature:
+        # 获取当前ticker数据
+        ticker = get_realtime_ticker(pair)
+        if not ticker:
             return None
-            
-        headers = {
-            'RST-API-KEY': API_KEY,
-            'MSG-SIGNATURE': signature,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
         
-        # 尝试多个端点
-        for endpoint in endpoints:
-            try:
-                logger.info(f"尝试K线端点: {endpoint}")
-                response = requests.get(endpoint, headers=headers, params=params, timeout=10)
-                
-                # 调试信息
-                logger.debug(f"K线响应状态: {response.status_code}")
-                logger.debug(f"K线响应内容: {response.text[:500]}...")
-                
-                # 检查响应内容
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if data.get('Success'):
-                        klines = data.get('Data', [])
-                        if not klines:
-                            klines = data  # 有些API直接返回数组
-                        
-                        # 转换为DataFrame
-                        df_data = []
-                        for kline in klines:
-                            # 处理不同的K线格式
-                            if isinstance(kline, list) and len(kline) >= 6:
-                                df_data.append({
-                                    'open_time': datetime.fromtimestamp(kline[0] / 1000),
-                                    'open': float(kline[1]),
-                                    'high': float(kline[2]),
-                                    'low': float(kline[3]),
-                                    'close': float(kline[4]),
-                                    'volume': float(kline[5]),
-                                    'symbol': symbol
-                                })
-                            elif isinstance(kline, dict):
-                                df_data.append({
-                                    'open_time': datetime.fromtimestamp(kline.get('openTime', 0) / 1000),
-                                    'open': float(kline.get('open', 0)),
-                                    'high': float(kline.get('high', 0)),
-                                    'low': float(kline.get('low', 0)),
-                                    'close': float(kline.get('close', 0)),
-                                    'volume': float(kline.get('volume', 0)),
-                                    'symbol': symbol
-                                })
-                        
-                        if df_data:
-                            logger.info(f"✅ 成功获取{symbol}K线数据: {len(df_data)}条")
-                            return pd.DataFrame(df_data)
-                    
-                    else:
-                        logger.warning(f"端点 {endpoint} 返回失败: {data.get('ErrMsg', '未知错误')}")
-                
-            except Exception as e:
-                logger.warning(f"端点 {endpoint} 失败: {e}")
-                continue
+        # 模拟生成历史数据（在实际比赛中可能需要使用Horus数据或其他数据源）
+        base_price = ticker['last_price']
+        dates = [datetime.now() - timedelta(days=x) for x in range(days, 0, -1)]
         
-        logger.error(f"❌ 所有K线端点都失败了")
-        return None
-            
+        # 生成模拟价格数据（带随机波动）
+        prices = [base_price]
+        for i in range(1, days):
+            change = np.random.normal(0, 0.02)  # 2%的日波动
+            new_price = prices[-1] * (1 + change)
+            prices.append(new_price)
+        
+        # 创建DataFrame
+        df_data = []
+        for i, date in enumerate(dates):
+            df_data.append({
+                'date': date,
+                'open': prices[i] * (1 + np.random.normal(0, 0.005)),
+                'high': prices[i] * (1 + abs(np.random.normal(0, 0.01))),
+                'low': prices[i] * (1 - abs(np.random.normal(0, 0.01))),
+                'close': prices[i],
+                'volume': np.random.normal(1000000, 200000),
+                'pair': pair
+            })
+        
+        return pd.DataFrame(df_data)
+        
     except Exception as e:
-        logger.error(f"❌ 获取K线数据时发生异常: {e}")
+        logger.error(f"❌ 获取市场数据时发生异常: {e}")
         return None
 
 # ========== 市场轮动策略类 ==========
@@ -277,69 +249,64 @@ class MarketRotationStrategy:
         # ========== 策略核心参数 ==========
         self.rebalance_hours = 6
         self.top_n = 3
-        self.momentum_periods = [3, 7, 14]
-        self.min_trade_amount = 50
+        self.momentum_periods = [7, 14, 30]
+        self.min_trade_amount = 10
         
-        # 数量精度配置（根据交易对调整）
-        self.quantity_precision = {
-            'BTCUSDT': 6,
-            'ETHUSDT': 4,
-            'ADAUSDT': 0,
-            'DOTUSDT': 2,
-            'BNBUSDT': 3
-        }
+        # ========== 交易对精度信息 ==========
+        self.exchange_info = None
+        self.load_exchange_info()
         
         # ========== 数据记录 ==========
-        self.buy_points = {symbol: [] for symbol in SYMBOLS}
-        self.sell_points = {symbol: [] for symbol in SYMBOLS}
-        self.price_history = {symbol: [] for symbol in SYMBOLS}
+        self.buy_points = {pair: [] for pair in SYMBOLS}
+        self.sell_points = {pair: [] for pair in SYMBOLS}
+        self.price_history = {pair: [] for pair in SYMBOLS}
         self.last_rebalance = None
         
         logger.info("🎯 市场轮动策略初始化完成")
 
-    def adjust_quantity_precision(self, symbol, quantity):
-        """调整数量精度以避免step size错误"""
-        precision = self.quantity_precision.get(symbol, 4)
+    def load_exchange_info(self):
+        """加载交易所信息，获取交易对精度"""
+        self.exchange_info = get_exchange_info()
+        if self.exchange_info:
+            logger.info("✅ 已加载交易对精度信息")
+        else:
+            logger.warning("⚠️ 无法获取交易对精度信息，使用默认值")
+
+    def get_amount_precision(self, pair):
+        """获取交易对的数量精度"""
+        if self.exchange_info and pair in self.exchange_info:
+            return self.exchange_info[pair].get('AmountPrecision', 4)
+        return 4  # 默认精度
+
+    def adjust_quantity_precision(self, pair, quantity):
+        """调整数量精度"""
+        precision = self.get_amount_precision(pair)
         return round(quantity, precision)
 
     def calculate_momentum_score(self, df):
-        """计算动量得分 - 添加回退逻辑"""
-        if df is None or len(df) < 2:
+        """计算动量得分"""
+        if df is None or len(df) < max(self.momentum_periods):
             return 0
         
         try:
-            # 确保有足够数据
-            available_periods = []
+            momentum_scores = []
+            
             for period in self.momentum_periods:
                 if len(df) >= period:
-                    available_periods.append(period)
-            
-            if not available_periods:
-                # 如果没有足够数据，使用可用数据计算
-                if len(df) >= 2:
-                    simple_return = (df['close'].iloc[-1] / df['close'].iloc[0] - 1)
-                    volatility = df['close'].pct_change().std()
+                    # 计算周期收益率
+                    period_return = (df['close'].iloc[-1] / df['close'].iloc[-period] - 1)
+                    
+                    # 计算周期波动率（风险）
+                    recent_returns = df['close'].pct_change().tail(period)
+                    volatility = recent_returns.std()
+                    
+                    # 风险调整收益：收益/波动率
                     if volatility > 0:
-                        return simple_return / volatility
-                    return simple_return
-                return 0
-            
-            momentum_scores = []
-            for period in available_periods:
-                # 计算周期收益率
-                period_return = (df['close'].iloc[-1] / df['close'].iloc[-period] - 1)
-                
-                # 计算周期波动率（风险）
-                recent_returns = df['close'].pct_change().tail(period)
-                volatility = recent_returns.std()
-                
-                # 风险调整收益：收益/波动率
-                if volatility > 0:
-                    risk_adjusted_return = period_return / volatility
-                else:
-                    risk_adjusted_return = period_return
-                
-                momentum_scores.append(risk_adjusted_return)
+                        risk_adjusted_return = period_return / volatility
+                    else:
+                        risk_adjusted_return = period_return
+                    
+                    momentum_scores.append(risk_adjusted_return)
             
             return np.mean(momentum_scores) if momentum_scores else 0
             
@@ -367,18 +334,18 @@ class MarketRotationStrategy:
             std_dev = portfolio_df['returns'].std()
             sharpe = mean_return / std_dev if std_dev != 0 else 0
             
-            # Sortino Ratio
+            # Sortino Ratio (下行风险调整)
             downside_returns = portfolio_df[portfolio_df['returns'] < 0]['returns']
             downside_std = downside_returns.std() if len(downside_returns) > 0 else 0
             sortino = mean_return / downside_std if downside_std != 0 else 0
             
-            # Calmar Ratio
+            # Calmar Ratio (最大回撤调整)
             portfolio_df['cummax'] = portfolio_df['portfolio_value'].cummax()
             portfolio_df['drawdown'] = (portfolio_df['portfolio_value'] - portfolio_df['cummax']) / portfolio_df['cummax']
             max_drawdown = portfolio_df['drawdown'].min()
             calmar = mean_return / abs(max_drawdown) if max_drawdown != 0 else 0
             
-            # 综合得分
+            # 综合得分（二等奖评分标准）
             composite_score = 0.4 * sortino + 0.3 * sharpe + 0.3 * calmar
             
             return {
@@ -394,79 +361,55 @@ class MarketRotationStrategy:
             return None
 
     def get_current_prices(self):
-        """获取所有交易对的当前价格 - 添加回退逻辑"""
+        """获取所有交易对的当前价格"""
         tickers = get_all_tickers()
         current_prices = {}
         
-        # 如果API失败，使用模拟数据继续运行
-        if not tickers:
-            logger.warning("⚠️ 无法获取实时价格，使用模拟数据继续运行")
-            # 生成模拟价格（基于初始假设）
-            base_prices = {'BTCUSDT': 45000, 'ETHUSDT': 3000, 'ADAUSDT': 0.45, 'DOTUSDT': 6.5, 'BNBUSDT': 350}
-            for symbol in SYMBOLS:
-                # 添加一些随机波动
-                change = np.random.normal(0, 0.01)
-                current_prices[symbol] = base_prices.get(symbol, 100) * (1 + change)
-                self.price_history[symbol].append({
-                    'timestamp': datetime.now(),
-                    'price': current_prices[symbol]
+        for pair, ticker in tickers.items():
+            if ticker:
+                current_prices[pair] = ticker['last_price']
+                self.price_history[pair].append({
+                    'timestamp': ticker['timestamp'],
+                    'price': ticker['last_price']
                 })
-        else:
-            for symbol, ticker in tickers.items():
-                if ticker:
-                    current_prices[symbol] = ticker['last_price']
-                    self.price_history[symbol].append({
-                        'timestamp': ticker['timestamp'],
-                        'price': ticker['last_price']
-                    })
         
         return current_prices
 
     def calculate_portfolio_value(self, current_prices):
         """计算当前投资组合总价值"""
         total_value = self.cash
-        for symbol, quantity in self.positions.items():
-            if quantity > 0 and symbol in current_prices:
-                total_value += quantity * current_prices[symbol]
+        for pair, quantity in self.positions.items():
+            if quantity > 0 and pair in current_prices:
+                total_value += quantity * current_prices[pair]
         return total_value
 
     def execute_rebalance(self):
-        """执行调仓操作 - 添加容错机制"""
+        """执行调仓操作"""
         logger.info(f"🔄 开始调仓操作 - {datetime.now()}")
         
-        # 1. 获取K线数据并计算动量得分
+        # 1. 获取市场数据并计算动量得分
         momentum_scores = {}
-        for symbol in SYMBOLS:
-            # 尝试获取K线数据，如果失败使用简单方法
-            df = get_kline_data(symbol, interval='1h', limit=50)  # 改为小时线，数据量更合适
-            
-            if df is not None and len(df) > 1:
+        for pair in SYMBOLS:
+            df = get_market_data(pair, days=30)
+            if df is not None and len(df) > 0:
                 score = self.calculate_momentum_score(df)
-                momentum_scores[symbol] = score
-                logger.info(f"   📊 {symbol}: 动量得分 = {score:.4f}")
+                momentum_scores[pair] = score
+                logger.info(f"   📊 {pair}: 动量得分 = {score:.4f}")
             else:
-                # 如果K线数据获取失败，使用价格历史计算简单动量
-                if self.price_history.get(symbol):
-                    prices = [p['price'] for p in self.price_history[symbol][-10:]]  # 最近10个价格
-                    if len(prices) >= 2:
-                        returns = [(prices[i] / prices[i-1] - 1) for i in range(1, len(prices))]
-                        if returns:
-                            mean_return = np.mean(returns)
-                            volatility = np.std(returns) if len(returns) > 1 else 0.01
-                            score = mean_return / volatility if volatility > 0 else mean_return
-                            momentum_scores[symbol] = score
-                            logger.info(f"   📊 {symbol}: 备用动量得分 = {score:.4f}")
-                            continue
-                
-                # 如果所有方法都失败，使用随机得分
-                momentum_scores[symbol] = np.random.normal(0, 0.1)
-                logger.info(f"   📊 {symbol}: 随机动量得分 = {momentum_scores[symbol]:.4f}")
+                # 如果无法获取数据，使用ticker的变化率作为简单动量
+                ticker = get_realtime_ticker(pair)
+                if ticker:
+                    momentum_scores[pair] = ticker['change']
+                    logger.info(f"   📊 {pair}: 使用变化率作为动量 = {ticker['change']:.4f}")
+                else:
+                    momentum_scores[pair] = 0
+                    logger.warning(f"   ⚠️  {pair}: 无法计算动量得分")
         
-        # 2. 选择动量最强的币种
-        top_symbols = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)[:self.top_n]
-        selected_symbols = [s[0] for s in top_symbols]
+        # 2. 选择动量最强的top_n个币种
+        top_pairs = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)[:self.top_n]
+        selected_pairs = [s[0] for s in top_pairs]
         
-        logger.info(f"   🏆 选中币种: {selected_symbols}")
+        logger.info(f"   🏆 选中币种: {selected_pairs}")
         
         # 3. 获取当前价格
         current_prices = self.get_current_prices()
@@ -475,29 +418,30 @@ class MarketRotationStrategy:
             return
         
         # 4. 卖出不在选中列表的持仓
-        symbols_to_sell = []
-        for symbol in list(self.positions.keys()):
-            if (self.positions[symbol] > 0 and 
-                symbol not in selected_symbols and
-                symbol in current_prices):
-                symbols_to_sell.append(symbol)
+        pairs_to_sell = []
+        for pair in list(self.positions.keys()):
+            if (self.positions[pair] > 0 and 
+                pair not in selected_pairs and
+                pair in current_prices):
+                pairs_to_sell.append(pair)
         
-        for symbol in symbols_to_sell:
-            current_price = current_prices[symbol]
-            quantity = self.positions[symbol]
+        for pair in pairs_to_sell:
+            current_price = current_prices[pair]
+            quantity = self.positions[pair]
             
             # 调整数量精度
-            adjusted_quantity = self.adjust_quantity_precision(symbol, quantity)
+            adjusted_quantity = self.adjust_quantity_precision(pair, quantity)
             
             # 执行卖出订单
-            if place_order(symbol, 'SELL', adjusted_quantity):
+            if place_order(pair, 'SELL', adjusted_quantity):
+                # 计算实际交易价值（考虑手续费）
                 sell_value = adjusted_quantity * current_price * 0.999
                 self.cash += sell_value
                 
-                self.sell_points[symbol].append((datetime.now(), current_price))
+                self.sell_points[pair].append((datetime.now(), current_price))
                 self.trade_history.append({
                     'timestamp': datetime.now(),
-                    'symbol': symbol,
+                    'pair': pair,
                     'action': 'SELL',
                     'quantity': adjusted_quantity,
                     'price': current_price,
@@ -505,45 +449,45 @@ class MarketRotationStrategy:
                     'reason': '调出轮动组合'
                 })
                 
-                logger.info(f"   🔴 卖出 {symbol}: {adjusted_quantity:.6f} 单位 @ ${current_price:.2f}")
-                self.positions[symbol] = 0
+                logger.info(f"   🔴 卖出 {pair}: {adjusted_quantity:.6f} 单位 @ ${current_price:.2f}")
+                self.positions[pair] = 0
         
         # 5. 买入选中的币种
-        if selected_symbols and self.cash > self.min_trade_amount:
-            cash_per_symbol = self.cash / len(selected_symbols)
+        if selected_pairs and self.cash > self.min_trade_amount:
+            cash_per_pair = self.cash / len(selected_pairs)
             
-            for symbol in selected_symbols:
-                if symbol in current_prices:
-                    current_price = current_prices[symbol]
+            for pair in selected_pairs:
+                if pair in current_prices:
+                    current_price = current_prices[pair]
                     
                     # 跳过已有持仓
-                    if self.positions.get(symbol, 0) > 0:
+                    if self.positions.get(pair, 0) > 0:
                         continue
                     
-                    quantity = cash_per_symbol / current_price
-                    adjusted_quantity = self.adjust_quantity_precision(symbol, quantity)
+                    quantity = cash_per_pair / current_price
+                    adjusted_quantity = self.adjust_quantity_precision(pair, quantity)
                     
                     # 确保数量大于0
                     if adjusted_quantity <= 0:
                         continue
                     
                     # 执行买入订单
-                    if place_order(symbol, 'BUY', adjusted_quantity):
-                        self.positions[symbol] = adjusted_quantity
-                        self.cash -= cash_per_symbol * 0.999
+                    if place_order(pair, 'BUY', adjusted_quantity):
+                        self.positions[pair] = adjusted_quantity
+                        self.cash -= cash_per_pair * 0.999  # 考虑手续费
                         
-                        self.buy_points[symbol].append((datetime.now(), current_price))
+                        self.buy_points[pair].append((datetime.now(), current_price))
                         self.trade_history.append({
                             'timestamp': datetime.now(),
-                            'symbol': symbol,
+                            'pair': pair,
                             'action': 'BUY',
                             'quantity': adjusted_quantity,
                             'price': current_price,
-                            'value': cash_per_symbol,
-                            'reason': f'动量得分: {momentum_scores[symbol]:.4f}'
+                            'value': cash_per_pair,
+                            'reason': f'动量得分: {momentum_scores[pair]:.4f}'
                         })
                         
-                        logger.info(f"   🟢 买入 {symbol}: {adjusted_quantity:.6f} 单位 @ ${current_price:.2f}")
+                        logger.info(f"   🟢 买入 {pair}: {adjusted_quantity:.6f} 单位 @ ${current_price:.2f}")
         
         self.last_rebalance = datetime.now()
         logger.info("   ✅ 调仓操作完成")
@@ -555,18 +499,21 @@ class MarketRotationStrategy:
         """实时监控策略表现"""
         metrics = self.calculate_risk_metrics()
         if metrics:
-            logger.info(f"📊 实时表现:")
+            logger.info(f"📊 实时表现监控:")
             logger.info(f"   总收益率: {metrics['total_return']*100:.2f}%")
-            logger.info(f"   Sharpe: {metrics['sharpe_ratio']:.4f}")
-            logger.info(f"   Sortino: {metrics['sortino_ratio']:.4f}") 
-            logger.info(f"   Calmar: {metrics['calmar_ratio']:.4f}")
+            logger.info(f"   Sharpe比率: {metrics['sharpe_ratio']:.4f}")
+            logger.info(f"   Sortino比率: {metrics['sortino_ratio']:.4f}") 
+            logger.info(f"   Calmar比率: {metrics['calmar_ratio']:.4f}")
             logger.info(f"   最大回撤: {metrics['max_drawdown']*100:.2f}%")
             logger.info(f"   综合得分: {metrics['composite_score']:.4f}")
 
     def run_live_strategy(self, run_duration_hours=24):
         """运行实时策略"""
-        logger.info(f"🚀 启动市场轮动策略")
-        logger.info(f"⏰ 运行时长: {run_duration_hours}小时")
+        logger.info(f"🚀 启动实时市场轮动策略")
+        logger.info(f"⏰ 运行时长: {run_duration_hours} 小时")
+        logger.info(f"📊 监控币种: {SYMBOLS}")
+        logger.info(f"🔄 调仓频率: 每 {self.rebalance_hours} 小时")
+        logger.info(f"🎯 持仓数量: 前 {self.top_n} 个币种")
         
         start_time = datetime.now()
         end_time = start_time + timedelta(hours=run_duration_hours)
@@ -579,14 +526,14 @@ class MarketRotationStrategy:
             current_time = datetime.now()
             cycle_count += 1
             
-            # 每6小时调仓一次
+            # 检查是否到达调仓时间
             if (self.last_rebalance is None or 
                 (current_time - self.last_rebalance).total_seconds() >= self.rebalance_hours * 3600):
                 
                 logger.info(f"\n🔄 第{cycle_count}次调仓周期")
                 self.execute_rebalance()
             
-            # 记录组合价值
+            # 记录投资组合价值
             current_prices = self.get_current_prices()
             if current_prices:
                 portfolio_value = self.calculate_portfolio_value(current_prices)
@@ -607,56 +554,74 @@ class MarketRotationStrategy:
     def print_final_report(self):
         """打印最终报告"""
         if not self.portfolio_value_history:
-            logger.warning("⚠️ 无投资组合数据")
+            logger.warning("⚠️ 无投资组合历史数据")
             return
             
         portfolio_df = pd.DataFrame(self.portfolio_value_history)
         final_value = portfolio_df['portfolio_value'].iloc[-1]
         total_return = (final_value - self.initial_cash) / self.initial_cash * 100
         
+        # 计算风险指标
         metrics = self.calculate_risk_metrics()
         
         print(f"\n" + "="*60)
-        print("📊 最终报告")
+        print("📊 策略最终报告")
         print("="*60)
         print(f"💰 初始资金: ${self.initial_cash:,.2f}")
         print(f"💰 最终价值: ${final_value:,.2f}")
         print(f"📈 总收益率: {total_return:.2f}%")
+        print(f"🔢 总交易次数: {len(self.trade_history)}")
         
         if metrics:
-            print(f"\n🏆 风险指标:")
-            print(f"   Sharpe: {metrics['sharpe_ratio']:.4f}")
-            print(f"   Sortino: {metrics['sortino_ratio']:.4f}")
-            print(f"   Calmar: {metrics['calmar_ratio']:.4f}")
+            print(f"\n🏆 风险调整指标（比赛评分）:")
+            print(f"   Sharpe比率: {metrics['sharpe_ratio']:.4f} (权重: 0.3)")
+            print(f"   Sortino比率: {metrics['sortino_ratio']:.4f} (权重: 0.4)")
+            print(f"   Calmar比率: {metrics['calmar_ratio']:.4f} (权重: 0.3)")
             print(f"   最大回撤: {metrics['max_drawdown']*100:.2f}%")
             print(f"   综合得分: {metrics['composite_score']:.4f}")
         
-        print(f"\n📝 交易次数: {len(self.trade_history)}")
-        print(f"📦 最终持仓:")
+        # 买卖统计
+        buy_trades = [t for t in self.trade_history if t['action'] == 'BUY']
+        sell_trades = [t for t in self.trade_history if t['action'] == 'SELL']
+        
+        print(f"\n📝 交易统计:")
+        print(f"   🟢 买入交易: {len(buy_trades)} 次")
+        print(f"   🔴 卖出交易: {len(sell_trades)} 次")
+        
+        print(f"\n📦 最终持仓:")
         print(f"   现金: ${self.cash:.2f}")
         current_prices = self.get_current_prices()
-        for symbol in SYMBOLS:
-            if self.positions.get(symbol, 0) > 0:
-                value = self.positions[symbol] * current_prices.get(symbol, 0)
-                print(f"   {symbol}: {self.positions[symbol]:.6f} 单位")
+        for pair in SYMBOLS:
+            if self.positions.get(pair, 0) > 0 and pair in current_prices:
+                value = self.positions[pair] * current_prices[pair]
+                print(f"   {pair}: {self.positions[pair]:.6f} 单位, 价值: ${value:.2f}")
 
 # ========== 主程序 ==========
 def main():
-    """主程序 - 简化版本用于测试"""
-    print("🚀 Roostoo比赛策略 - 修复版本")
+    """主程序"""
+    print("🚀 Roostoo Hackathon - 市场轮动策略")
     print("="*50)
+    
+    # 检查API配置
+    if not API_KEY or not SECRET_KEY:
+        print("❌ 请配置API密钥和Secret Key")
+        return
     
     # 测试API连接
     print("🔗 测试API连接...")
     balance = get_account_balance()
     if balance is None:
-        print("❌ API连接失败，使用模拟模式运行")
-        # 继续运行但使用模拟数据
+        print("❌ API连接失败，请检查网络和API密钥")
+        return
     
-    print("✅ 策略就绪")
+    print("✅ API连接成功")
+    
+    # 获取初始资金
+    initial_cash = balance.get('USD', {}).get('Free', 10000)
+    print(f"💰 初始资金: ${initial_cash:.2f}")
     
     # 创建策略实例
-    strategy = MarketRotationStrategy(initial_cash=10000)
+    strategy = MarketRotationStrategy(initial_cash=initial_cash)
     
     # 先运行24小时测试
     print("\n🎯 开始24小时测试运行...")
