@@ -23,8 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========== API配置 ==========
-API_KEY = "PvXrtqLPiu7DqiVyC6aCAAoE0kgRtJdXeoC7wLn0OIOf5qIKrb58GbATFctkMWn0"
-SECRET_KEY = "94WfpKd5PHng5u2ySWvZW0URKxZofI5rON3MJ0CURKgz4gKj1vxI8HZmvugrOt4U"
+API_KEY = "E4rT6yUiP9oA1sDdF3gJ7hKlZ0xC2vBnM5qW8eRtY1uI4oPaS6dF0gHjK8lL2ZxC"
+SECRET_KEY = "O2pA4sDdF6gJ8hKlZ0xC2vBnM4qW6eRtY8uI0oPaS2dF4gHjK6lL8ZxC0vBn"
 BASE_URL = "https://mock-api.roostoo.com"
 
 # ========== 交易对配置 ==========
