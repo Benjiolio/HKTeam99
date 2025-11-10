@@ -239,7 +239,7 @@ def get_market_data(pair, days=30):
 class MarketRotationStrategy:
     """基于Roostoo API的市场轮动策略"""
     
-    def __init__(self, initial_cash=10000):
+    def __init__(self, initial_cash=50000):
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.positions = {}
