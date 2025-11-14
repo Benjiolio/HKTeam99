@@ -29,7 +29,11 @@ BASE_URL = "https://mock-api.roostoo.com"
 
 # ========== 交易对配置 ==========
 # 根据文档使用正确的交易对格式
-SYMBOLS = ['BTC/USD', 'ETH/USD', 'ADA/USD', 'DOT/USD', 'BNB/USD']
+SYMBOLS = ['BTC/USD', 'ETH/USD', 'ADA/USD', 'DOT/USD', 'BNB/USD', 'SOL/USD', 'XRP/USD', 'ZEC/USD', 'DOGE/USD', 'ASTER/USD', 'UNI/USD', 'TRX/USD', 'SUI/USD', 'LTC/USD', 'LINK/USD', 'PUMP/USD', 'ICP/USD',
+           'AVAX/USD', 'TAO/USD', 'PAXG/USD', 'HBAR/USD', 'TRUMP/USD', 'PEPE/USD', 'AAVE/USD', 'XPL/USD', 'ENA/USD', 'FIL/USD', 'NEAR/USD', 'VIRTUAL/USD', 'AVNT/USD', 'FET/USD', 'PENGU/USD', 'ARB/USD', 
+           'WLFI/USD', 'XLM/USD', 'ZEN/USD', 'WLD/USD', 'TON/USD', 'LINEA/USD', 'CRV/USD', 'BONK/USD', 'SEI/USD', 'WIF/USD', 'APT/USD', 'POL/USD', 'EIGEN/USD', 'CAKE/USD', 'FLOKI/USD', 'ONDO/USD', 'SHIB/USD', 
+           'S/USD', 'PLUME/USD', 'CFX/USD', 'PENDLE/USD', 'FORM/USD', 'EDEN/USD', 'MIRA/USD', 'BIO/USD', 'SOMI/USD', 'HEMI/USD', '1000CHEEMS/USD', 'TUT/USD', 'STO/USD', 'LISTA/USD', 'OPEN/USD', 'OMNI/USD']
+# init symbols: 'BTC/USD', 'ETH/USD', 'ADA/USD', 'DOT/USD', 'BNB/USD'
 
 # ========== API工具函数 ==========
 def get_timestamp():
